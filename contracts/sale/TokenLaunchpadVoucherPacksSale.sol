@@ -5,6 +5,8 @@ pragma solidity >=0.7.6 <0.8.0;
 import {Sale, FixedPricesSale} from "@animoca/ethereum-contracts-sale-2.0.0/contracts/sale/FixedPricesSale.sol";
 import {Recoverable} from "@animoca/ethereum-contracts-core-1.1.2/contracts/utils/Recoverable.sol";
 
+import "@openzeppelin/contracts/cryptography/MerkleProof.sol";
+
 /**
  * @title TokenLaunchpad Vouchers Sale
  * A FixedPricesSale contract that handles the purchase and delivery of TokenLaunchpad vouchers.
@@ -19,6 +21,15 @@ contract TokenLaunchpadVoucherPacksSale is FixedPricesSale, Recoverable {
     }
 
     mapping(bytes32 => SkuAdditionalInfo) internal _skuAdditionalInfo;
+
+    //SKU -> user address => block number of last purchase
+    mapping(bytes32 => mapping(address => uint256)) public CoolOff;
+
+    //The number of blocks the user has to wait for before purchasing again
+    uint256 public coolOffPeriod;
+
+    //Root of Merkle Tree
+    bytes32 public merkleRoot;
 
     /**
      * Constructor.
@@ -36,6 +47,66 @@ contract TokenLaunchpadVoucherPacksSale is FixedPricesSale, Recoverable {
         uint256 tokensPerSkuCapacity
     ) FixedPricesSale(payoutWallet, skusCapacity, tokensPerSkuCapacity) {
         vouchersContract = vouchersContract_;
+    }
+
+    /**
+     * Sets the block number that has to pass between 2 purchases by the same user
+     * @param _coolOffPeriod The number of blocks
+     */
+    function setCoolOffTime(uint256 _coolOffPeriod) public {
+        _requireOwnership(_msgSender());
+        coolOffPeriod = _coolOffPeriod;
+    }
+
+    /**
+     * Sets the Merkle root based on KYC addresses
+     * @param _merkleRoot The merkle root
+     */
+    function setMerkleRoot(bytes32 _merkleRoot) public {
+        _requireOwnership(_msgSender());
+        merkleRoot = _merkleRoot;
+    }
+
+    /**
+     * Buys a voucher
+     * @dev Overloads inherited function
+     * @param merkleProof Merkle proof of leaf address
+     */
+    function purchaseFor(
+        address payable recipient,
+        address token,
+        bytes32 sku,
+        uint256 quantity,
+        bytes calldata userData,
+        bytes32[] calldata merkleProof
+    ) public payable whenStarted {
+        require(MerkleProof.verify(merkleProof, merkleRoot, keccak256(abi.encodePacked(msg.sender))), "Sale: invalid merkle proof");
+        require(CoolOff[sku][msg.sender] + coolOffPeriod < block.number, "Sale: cool off period is not over");
+        CoolOff[sku][msg.sender] = block.number;
+
+        _requireNotPaused();
+        PurchaseData memory purchase;
+        purchase.purchaser = _msgSender();
+        purchase.recipient = recipient;
+        purchase.token = token;
+        purchase.sku = sku;
+        purchase.quantity = quantity;
+        purchase.userData = userData;
+
+        _purchaseFor(purchase);
+    }
+
+    /**
+     * @dev Overrides inherited function
+     */
+    function purchaseFor(
+        address payable recipient,
+        address token,
+        bytes32 sku,
+        uint256 quantity,
+        bytes calldata userData
+    ) public payable override whenStarted {
+        require(false, "Sale: Deprecated function");
     }
 
     /**
